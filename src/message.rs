@@ -1,7 +1,7 @@
 use std::fmt;
 
-#[derive(Clone)]
-pub enum ConventionalType {
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema, Debug, Clone)]
+pub enum CommitType {
     Build,
     CI,
     Chore,
@@ -15,37 +15,34 @@ pub enum ConventionalType {
     Test,
 }
 
-#[derive(Clone)]
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema, Debug, Clone)]
 pub struct CommitMessage {
-    pub msgtype: Option<ConventionalType>,
+    pub commit_type: Option<CommitType>,
     pub breaking_change: bool,
     pub scope: Option<String>,
-    pub subject: String,
+    pub description: String,
     pub body: Option<String>,
-    pub select: bool,
 }
 
 impl CommitMessage {
     pub fn new(
-        msgtype: Option<ConventionalType>,
+        commit_type: Option<CommitType>,
         breaking_change: bool,
         scope: Option<String>,
         subject: String,
         body: Option<String>,
-        select: bool,
     ) -> Self {
         Self {
-            msgtype,
+            commit_type,
             breaking_change,
             scope,
-            subject,
+            description: subject,
             body,
-            select,
         }
     }
 }
 
-impl fmt::Display for ConventionalType {
+impl fmt::Display for CommitType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         #[rustfmt::skip]
         let value = match self {
@@ -67,6 +64,6 @@ impl fmt::Display for ConventionalType {
 
 impl fmt::Display for CommitMessage {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.subject)
+        write!(f, "{}", self.description)
     }
 }

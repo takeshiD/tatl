@@ -1,9 +1,11 @@
-use crate::message::{CommitMessage, ConventionalType};
+use crate::message::CommitMessage;
+use crate::provider::MessageProvider;
 
-use anyhow::Result;
+use color_eyre::Result;
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind};
+use futures::{stream::FuturesUnordered, StreamExt};
 use ratatui::{
     buffer::Buffer,
-    crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
     layout::{Constraint, Layout, Rect},
     style::{
         palette::tailwind::{CYAN, RED, SLATE},
@@ -13,6 +15,7 @@ use ratatui::{
     widgets::{Block, List, ListItem, ListState, Paragraph, StatefulWidget, Widget},
     DefaultTerminal,
 };
+use std::time::Duration;
 
 const TITLE_STYLE: Style = Style::new().bg(CYAN.c700).add_modifier(Modifier::BOLD);
 const CURSOR_STYLE: Style = Style::new().bg(SLATE.c700);
@@ -22,124 +25,115 @@ const MSGTYPE_STYLE: Style = Style::new().fg(CYAN.c500);
 const BREAKINGCHANGE_STYLE: Color = RED.c600;
 const SCOPE_STYLE: Color = CYAN.c200;
 
-impl From<&CommitMessage> for ListItem<'_> {
-    fn from(value: &CommitMessage) -> Self {
+impl From<&CommitMessageItem> for ListItem<'_> {
+    fn from(value: &CommitMessageItem) -> Self {
         let mut message = Line::default();
         if value.select {
             message.push_span(Span::styled("[🗸] ", SELECTED_STYLE))
         } else {
             message.push_span(Span::styled("[ ] ", NONSELECTED_STYLE))
         }
-        if let Some(msgtype) = value.msgtype.clone() {
+        if let Some(msgtype) = value.message.commit_type.clone() {
             message.push_span(Span::styled(format!("{}", msgtype), MSGTYPE_STYLE));
-            if let Some(scope) = value.scope.clone() {
+            if let Some(scope) = value.message.scope.clone() {
                 message.push_span(Span::styled(format!("({})", scope), SCOPE_STYLE));
             }
-            if value.breaking_change {
+            if value.message.breaking_change {
                 message.push_span(Span::styled("!", BREAKINGCHANGE_STYLE));
             }
             message.push_span(Span::raw(": "));
         }
-        message.push_span(Span::raw(value.subject.clone()));
+        message.push_span(Span::raw(value.message.description.clone()));
         ListItem::new(message)
     }
 }
 
-struct CommitMessageList {
-    messages: Vec<CommitMessage>,
-    state: ListState,
+#[derive(Clone)]
+struct CommitMessageItem {
+    message: CommitMessage,
+    select: bool,
 }
 
-impl
-    FromIterator<(
-        Option<ConventionalType>,
-        bool,
-        Option<String>,
-        String,
-        Option<String>,
-        bool,
-    )> for CommitMessageList
-{
-    fn from_iter<
-        T: IntoIterator<
-            Item = (
-                Option<ConventionalType>,
-                bool,
-                Option<String>,
-                String,
-                Option<String>,
-                bool,
-            ),
-        >,
-    >(
-        iter: T,
-    ) -> Self {
-        let messages = iter
-            .into_iter()
-            .map(|(msgtype, breaking_change, scope, subject, body, select)| {
-                CommitMessage::new(msgtype, breaking_change, scope, subject, body, select)
-            })
-            .collect();
-        let state = ListState::default().with_selected(Some(0));
-        Self { messages, state }
+impl CommitMessageItem {
+    fn new(message: CommitMessage) -> Self {
+        Self {
+            message,
+            select: false,
+        }
     }
 }
 
+#[derive(Clone)]
+struct CommitMessageList {
+    messages: Vec<CommitMessageItem>,
+    state: ListState,
+}
+
+impl CommitMessageList {
+    fn new() -> Self {
+        Self {
+            messages: Vec::new(),
+            state: ListState::default(),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct App {
     message_list: CommitMessageList,
     should_exit: bool,
 }
 
+// Constructor
+impl App {
+    pub fn new() -> Self {
+        Self {
+            message_list: CommitMessageList::new(),
+            should_exit: false,
+        }
+    }
+}
+
 impl Default for App {
     fn default() -> Self {
-        Self {
-            should_exit: false,
-            message_list: CommitMessageList::from_iter([
-                (None, false, None, "Helloworld".to_string(), None, false),
-                (
-                    Some(ConventionalType::Fix),
-                    false,
-                    None,
-                    "Helloworld".to_string(),
-                    None,
-                    false,
-                ),
-                (
-                    Some(ConventionalType::Feat),
-                    false,
-                    None,
-                    "Yesterday".to_string(),
-                    None,
-                    false,
-                ),
-                (
-                    Some(ConventionalType::Build),
-                    true,
-                    None,
-                    "Yesterday".to_string(),
-                    None,
-                    false,
-                ),
-                (
-                    Some(ConventionalType::Docs),
-                    true,
-                    Some("lang".to_string()),
-                    "Yesterday".to_string(),
-                    None,
-                    false,
-                ),
-            ]),
-        }
+        Self::new()
     }
 }
 
 // Key Logic
 impl App {
-    pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
+    pub async fn run(
+        &mut self,
+        mut terminal: DefaultTerminal,
+        provider: MessageProvider,
+        diff_content: &str,
+        generate_count: usize,
+    ) -> Result<()> {
+        let mut tasks = FuturesUnordered::new();
+        for _ in 0..generate_count {
+            tasks.push(provider.generate_message(diff_content, "Japanese"));
+        }
+        let period = Duration::from_millis(10);
+        let mut interval = tokio::time::interval(period);
+        let mut reader = EventStream::new();
         while !self.should_exit {
-            terminal.draw(|frame| frame.render_widget(&mut self, frame.area()))?;
-            if let Event::Key(key) = event::read()? {
-                self.handle_key(key);
+            let mut this = self.clone();
+            tokio::select! {
+                Some(msg) = tasks.next() => {
+                    match msg {
+                        Ok(message) => self.push_message(message),
+                        Err(_) => panic!("Failed")
+                    }
+                },
+                Some(Ok(event)) = reader.next() => {
+                    match event {
+                        Event::Key(key) => self.handle_key(key),
+                            _ => panic!("Failed"),
+                    }
+                },
+                _ = interval.tick() => {
+                    terminal.draw(|frame| frame.render_widget(&mut this, frame.area()))?;
+                },
             };
         }
         Ok(())
@@ -178,6 +172,11 @@ impl App {
     }
     fn confirm(&mut self) {
         self.should_exit = true;
+    }
+    fn push_message(&mut self, message: CommitMessage) {
+        self.message_list
+            .messages
+            .push(CommitMessageItem::new(message))
     }
 }
 
