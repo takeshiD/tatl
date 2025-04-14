@@ -2,13 +2,13 @@ use crate::message::CommitMessage;
 use crate::provider::MessageProvider;
 
 use color_eyre::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use futures::{stream::FuturesUnordered, StreamExt};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
     style::{
-        palette::tailwind::{CYAN, RED, SLATE},
+        palette::tailwind::{CYAN, RED, SKY, SLATE},
         Color, Modifier, Style,
     },
     text::{Line, Span},
@@ -17,7 +17,7 @@ use ratatui::{
 };
 use std::time::Duration;
 
-const TITLE_STYLE: Style = Style::new().bg(CYAN.c700).add_modifier(Modifier::BOLD);
+const HEADER_HELP_STYLE: Style = Style::new().fg(SKY.c500).add_modifier(Modifier::BOLD);
 const CURSOR_STYLE: Style = Style::new().bg(SLATE.c700);
 const SELECTED_STYLE: Style = Style::new().fg(CYAN.c200);
 const NONSELECTED_STYLE: Style = Style::new().fg(SLATE.c200);
@@ -29,9 +29,9 @@ impl From<&CommitMessageItem> for ListItem<'_> {
     fn from(value: &CommitMessageItem) -> Self {
         let mut message = Line::default();
         if value.select {
-            message.push_span(Span::styled("[🗸] ", SELECTED_STYLE))
+            message.push_span(Span::styled("🗸 ", SELECTED_STYLE))
         } else {
-            message.push_span(Span::styled("[ ] ", NONSELECTED_STYLE))
+            message.push_span(Span::styled("  ", NONSELECTED_STYLE))
         }
         if let Some(msgtype) = value.message.commit_type.clone() {
             message.push_span(Span::styled(format!("{}", msgtype), MSGTYPE_STYLE));
@@ -73,7 +73,7 @@ impl CommitMessageList {
     fn new() -> Self {
         Self {
             messages: Vec::new(),
-            state: ListState::default(),
+            state: ListState::default().with_selected(Some(0)),
         }
     }
 }
@@ -106,35 +106,37 @@ impl App {
         &mut self,
         mut terminal: DefaultTerminal,
         provider: MessageProvider,
-        diff_content: &str,
+        diff_content: String,
         generate_count: usize,
     ) -> Result<()> {
         let mut tasks = FuturesUnordered::new();
         for _ in 0..generate_count {
-            tasks.push(provider.generate_message(diff_content, "Japanese"));
+            tasks.push(provider.generate_message(diff_content.as_str(), "Japanese"));
         }
-        let period = Duration::from_millis(10);
+        let mut spinner = SpinnerWidget::new("Generating messages...");
+        let period = Duration::from_millis(100);
         let mut interval = tokio::time::interval(period);
-        let mut reader = EventStream::new();
+        loop {
+            tokio::select! {
+                _ = interval.tick() => { terminal.draw(|frame| frame.render_widget(&mut spinner, frame.area()))?;},
+                maybe_gen = tasks.next() => {
+                    match maybe_gen {
+                        Some(maybe_message) => {
+                            if let Ok(message) = maybe_message {
+                                self.push_message(message);
+                            }
+                        }
+                        None => break,
+                    }
+                },
+            }
+        }
         while !self.should_exit {
             let mut this = self.clone();
-            tokio::select! {
-                Some(msg) = tasks.next() => {
-                    match msg {
-                        Ok(message) => self.push_message(message),
-                        Err(_) => panic!("Failed")
-                    }
-                },
-                Some(Ok(event)) = reader.next() => {
-                    match event {
-                        Event::Key(key) => self.handle_key(key),
-                            _ => panic!("Failed"),
-                    }
-                },
-                _ = interval.tick() => {
-                    terminal.draw(|frame| frame.render_widget(&mut this, frame.area()))?;
-                },
-            };
+            terminal.draw(|frame| frame.render_widget(&mut this, frame.area()))?;
+            if let Event::Key(key) = event::read()? {
+                self.handle_key(key);
+            }
         }
         Ok(())
     }
@@ -193,10 +195,15 @@ impl Widget for &mut App {
 impl App {
     fn render_header(area: Rect, buf: &mut Buffer) {
         let mut header = Line::default();
-        header.push_span(Span::styled("TALT\n", TITLE_STYLE));
-        header.push_span(Span::raw(
-            "Move ↑↓ or 'j'/'k'  Select 'Space'  Confirm 'Enter'  Quit 'q'",
-        ));
+        // header.push_span(Span::styled("TALT\n", TITLE_STYLE));
+        header.push_span(Span::styled("Move ", HEADER_HELP_STYLE));
+        header.push_span(Span::raw("<Up>/<Down> or <j>/<k>  "));
+        header.push_span(Span::styled("Select ", HEADER_HELP_STYLE));
+        header.push_span(Span::raw("<Space> "));
+        header.push_span(Span::styled("Confirm ", HEADER_HELP_STYLE));
+        header.push_span(Span::raw("<Enter>  "));
+        header.push_span(Span::styled("Quit ", HEADER_HELP_STYLE));
+        header.push_span(Span::raw("<q>  "));
         Paragraph::new(header).render(area, buf);
     }
     fn render_list(&mut self, area: Rect, buf: &mut Buffer) {
@@ -213,5 +220,50 @@ impl App {
             .highlight_symbol("❯ ")
             .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
         StatefulWidget::render(list, area, buf, &mut self.message_list.state);
+    }
+    fn render_selected_item_info(&mut self, area: Rect, buf: &mut Buffer) {
+        let block = Block::new().title(Line::raw("? Select suggested commit messages"));
+        let items: Vec<ListItem> = self
+            .message_list
+            .messages
+            .iter()
+            .map(ListItem::from)
+            .collect();
+        let list = List::new(items)
+            .block(block)
+            .highlight_style(CURSOR_STYLE)
+            .highlight_symbol("❯ ")
+            .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
+        StatefulWidget::render(list, area, buf, &mut self.message_list.state);
+    }
+}
+
+struct SpinnerWidget {
+    text: &'static str,
+    count: usize,
+    symbols: &'static [&'static str],
+}
+
+impl Widget for &mut SpinnerWidget {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        self.render_spinner(area, buf);
+    }
+}
+
+impl SpinnerWidget {
+    fn new(text: &'static str) -> Self {
+        Self {
+            text,
+            count: 0,
+            symbols: &["⠷", "⠯", "⠟", "⠻", "⠽", "⠾"],
+        }
+    }
+    fn render_spinner(&mut self, area: Rect, buf: &mut Buffer) {
+        let mut line = Line::default();
+        let symbol = self.symbols.get(self.count).expect("Failed");
+        line.push_span(Span::styled(format!("{} ", symbol), Color::Green));
+        line.push_span(Span::styled(self.text, SLATE.c100));
+        self.count = (self.count + 1) % self.symbols.len();
+        Paragraph::new(line).render(area, buf);
     }
 }
