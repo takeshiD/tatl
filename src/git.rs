@@ -35,7 +35,7 @@ pub fn get_staged_diff(root_path: &str) -> Result<String> {
         }
     })?;
     if diff_output.is_empty() {
-        Err(eyre!("repository is not staged"))
+        Err(eyre!("not found staged files"))
     } else {
         Ok(diff_output)
     }

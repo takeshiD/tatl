@@ -93,7 +93,7 @@ feat: implemented linked-list class, modified interface, and modified docstring.
 Commited
 ```
 
-## Non-Interactive Mode
+## No-Interactive Mode
 In interactive mode you can choose from multiple messages, but in non-interactive mode the message that is rated as best explaining the differences will be selected.
 
 ```sh
@@ -114,3 +114,8 @@ done
 $ tatl --output-format=lazygit
 ```
 
+# Inspiration
+- [aicommits](https://github.com/Nutlope/aicommits)
+- [gptcommit](https://github.com/zurawiki/gptcommit)
+- [CodeGPT](https://github.com/appleboy/CodeGPT)
+- [bunnai](https://github.com/chhoumann/bunnai)

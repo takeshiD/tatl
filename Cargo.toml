@@ -2,6 +2,11 @@
 name = "tatl"
 version = "0.0.1"
 edition = "2024"
+authors = ["tkcd"]
+description = "Generating commit message over your changes"
+readme = "README.md"
+license = "MIT"
+license-file = "LICENSE"
 
 [dependencies]
 clap = { version = "4.5.35", features = ["derive"] }
@@ -9,6 +14,7 @@ color-eyre = "0.6.3"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 futures = "0.3.31"
 git2 = "0.20.1"
+owo-colors = "4.2.0"
 ratatui = "0.29.0"
 rig-core = "0.11.0"
 schemars = "0.8.22"
